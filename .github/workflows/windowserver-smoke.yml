@@ -41,6 +41,22 @@ jobs:
           bash -n Tools/windowserver-benchmark.sh
           echo 'Bash syntax: PASS'
 
+      - name: Probe macOS input source and window visibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Console owner: $(stat -f '%Su' /dev/console)"
+          echo "WindowServer and azooKey processes:"
+          ps -axo pid,ppid,user,stat,comm | grep -E 'WindowServer|azooKeyMac|Google Chrome' | head -n 24 || true
+          echo "Chrome window count:"
+          osascript -e 'tell application "Google Chrome" to count windows' || true
+          echo "Frontmost app via System Events:"
+          osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' || true
+          echo "CoreGraphics global window list:"
+          swift -e 'import CoreGraphics; import Foundation; let w = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]]) ?? []; print("total_window_count=\(w.count)"); let owners = Dictionary(grouping: w, by: { ($0[kCGWindowOwnerName as String] as? String) ?? "unknown" }); for (name, windows) in owners.sorted(by: { $0.value.count > $1.value.count }).prefix(12) { print("\(name): \(windows.count)") }' || true
+          echo "Selected input source:"
+          swift -e 'import Carbon; if let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(), let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) { print(Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue()) }' || true
+
       - name: Exercise real Chrome input focus and measure WindowServer
         shell: bash
         env:
