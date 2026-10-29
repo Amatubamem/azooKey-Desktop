@@ -40,6 +40,11 @@ let targets: [Target] = [
             .plugin(name: "GitInfoPlugin")
         ]
     ),
+    .executableTarget(
+        name: "learning-memory-editor",
+        dependencies: ["Core"],
+        swiftSettings: [.interoperabilityMode(.Cxx)]
+    ),
     .testTarget(
         name: "CoreTests",
         dependencies: ["Core"],

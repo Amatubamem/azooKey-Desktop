@@ -19,6 +19,7 @@
 |---|---|---|
 | `chore(local)` | Personal Team向けの署名と識別子を変更する | 独自版の署名・バンドルID・App Group・設定キーを維持する |
 | `build(local)` | 独自版のビルドとインストールを整える | 個人用の設定を維持し、正式版で修正済みの対処は取り除く |
+| `feat(memory)` | 学習データの閲覧・編集と、TSVの書き出しを追加する | データを保全し、並べ替え時の選択を維持する |
 
 ### Zenzaiのモデルのパス
 
@@ -48,6 +49,55 @@ Personal Teamのプロビジョニングプロファイルは、`group.`で始�
 - `Core/Sources/Core/Configs/AppGroup.swift`
 - `azooKeyMac/azooKeyMac.entitlements`
 - `Core/Tests/CoreTests/ConfigsTests/AppGroupTests.swift`
+
+### 学習データの編集画面
+
+設定画面の「学習」にある「履歴学習データ」の「編集」から、学習データを検索し、選択した項目を削除できる。IMEの変換器`KanaKanjiConverter`で直接削除するため、IMEを再起動せずに直後の変換から反映される。`learning-memory-editor dump`は、学習データをタブ区切りのTSVに書き出す。
+
+追加・変更したファイルは、以下のとおりである。
+
+| ファイル | 役割 |
+|---|---|
+| `Core/Sources/Core/LearningMemory/LearningMemoryEditor.swift` | 学習データを読み込み、削除を計画して適用する |
+| `azooKeyMac/Windows/LearningMemoryEditorWindow.swift` | 編集画面を構成する |
+| `azooKeyMac/Windows/LearningMemoryTable.swift` | 表示中のセルを再描画する |
+| `azooKeyMac/AppDelegate.swift` | `openLearningMemoryEditorWindow`で編集画面を開く |
+| `azooKeyMac/Windows/ConfigWindow.swift` | 「編集」ボタンを配置する |
+| `Core/Sources/learning-memory-editor/main.swift`、`Core/Package.swift` | 書き出し用のCLIを提供する |
+| `Core/Tests/CoreTests/LearningMemoryTests/LearningMemoryEditorTests.swift` | 読み込み、削除、復元を検証する |
+| `azooKeyMacTests/LearningMemoryTableTests.swift` | 並べ替え、選択、列幅、複数選択、Deleteキーを検証する |
+
+読込では、学習データのファイル（`memory.memorymetadata`と`memoryN.loudstxt3`）を直接読み取る。書込では、`createSession`で生成した専用のセッションで、変換エンジンの公開APIを呼ぶ。`requestCandidates`で保存先と学習方式を指定し、`forgetMemory`で削除する。復元と保存には、`updateLearningData`と`commitUpdateLearningData`を呼ぶ。
+
+削除には入力処理と同じ変換器を使う。削除の前後で学習データを保存し、削除の結果を確認する。画面を閉じる際には、削除結果のメッセージを消す。
+
+削除する候補と表記が同じ候補は、再登録後に使用回数・最終使用日・最終更新日・順位スコアを元に戻す。復元時の保存では、エンジンと同じ `.2` ファイルと `.pause` による復旧手順を使う。
+
+#### 一覧の並べ替え
+
+約15,000件の学習データを「読み」または「表記」で並べ替えると、約10秒待つとの報告を受け、表示処理を変更した。変更前は、画面の再評価ごとに`shownEntries`が全件をソートしていた。件数表示とテーブルからの呼び出しが重複し、SwiftUIの行の移動処理にも時間を費やしていた。
+
+ソートは読み込み時と条件の変更時に1回だけ行い、検索では並べ替え済みの配列を絞り込む。選択やメッセージの変更時にはソートしない。文字列の比較には`.localizedStandard`を使う。
+
+テーブルには`NSTableView`を使い、表示中のセルを再描画する。選択には既存の項目IDを使う。再描画中には選択変更を通知せず、並べ替えた後に選択位置を復元する。テーブルを作り直さず、ユーザーが調整した列幅も保つ。
+
+ソート結果を保存するだけではSwiftUIの行の移動処理が残るため、`NSTableView`を採用した。並べ替えに伴う変更は表示処理に限り、学習データの読み書きと保存形式は維持した。
+
+2026-10-23の検証では、製品コードのテーブルを組み込んだ再現用の画面で15,329件の表記を並べ替えた。ソート本体は約0.416秒、画面更新を含む待ち時間は約0.468秒だった。項目のモデルは検証用に差し替え、学習データはCLIでメモリ上に読み取った。学習データの本文はログやファイルへ保存していない。
+
+同日の記録では、`LearningMemoryTableTests`、macOS向けのReleaseビルドが成功した。変更したSwiftファイルのSwiftLint検査と`git diff --check`も成功した。計測は再現用の画面によるものであり、再インストール後のIMEの操作時間は確認していない。
+
+#### 学習データ管理の検証
+
+変換エンジンを更新した場合は、学習データ管理のテストを実行する。`dump`でも、ファイル形式とAPIが変わっていないことを確かめる。
+
+```zsh
+swift test --package-path Core --filter learningMemoryEditor
+swift build --package-path Core -c release --product learning-memory-editor
+Core/.build/release/learning-memory-editor dump > ~/Desktop/memory.tsv
+```
+
+並べ替えや選択の処理を変更した場合は、Xcodeで`LearningMemoryTableTests`も実行する。
 
 ### クリーンインストールと登録後の更新
 
@@ -98,7 +148,7 @@ Git情報の生成処理はupstreamに合わせて戻した。生成する内容
    git merge upstream/main
    ```
 
-4. 衝突を解消する。個人用の署名設定、App Group、入力ソースのIDを維持する。
+4. 衝突を解消する。個人用の署名設定、App Group、入力ソースのID、TSVの書き出しを維持する。
 5. アプリと設定に含まれる識別子の置換漏れを確かめる。置換漏れがない場合、2つのコマンドの出力は空になる。
 
    ```zsh
@@ -123,6 +173,7 @@ Git情報の生成処理はupstreamに合わせて戻した。生成する内容
 |---|---|---|
 | Zenzaiの読込 | 日本語を1回変換してから`lsof -Fn -p $(pgrep -x azooKeyMac) \| grep gguf`を実行する | ggufのパスが表示される |
 | 権限の確認ダイアログ | IMEを起動した後に`/usr/bin/log show --last 5m --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "AUTHREQ_PROMPTING" AND eventMessage CONTAINS "azooKey"'`を実行する | 何も表示されない |
+| 学習データの編集 | 設定画面の「履歴学習データ」の「編集」で項目を削除し、続けて削除した項目の読みを変換する | 削除した表記が候補に出ない |
 
 ## データの保存場所
 
