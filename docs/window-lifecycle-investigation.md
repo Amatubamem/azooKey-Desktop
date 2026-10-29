@@ -14,6 +14,29 @@ azooKey-Desktop #348では、不可視ウィンドウが80枚、別環境では1
 
 ### 入力セッションの生成から表示まで
 
+### InputMethodKitの仕組みとazooKeyへの接続
+
+[InputMethodKit](https://developer.apple.com/documentation/inputmethodkit)（IMK）は、macOSで日本語入力などの入力メソッドを実装するためのフレームワークであり、OSのText Services Managerと連携する。入力先アプリとの接続、入力イベント、未確定文字列、候補選択などを扱うためのAPIを提供する。変換アルゴリズムや候補画面の具体的なUIは、入力メソッドの実装が選択できる。
+
+[`IMKServer`](https://developer.apple.com/documentation/inputmethodkit/imkserver)は、入力メソッド側でクライアントとの接続を受け付ける。Appleの[`IMKInputController`](https://developer.apple.com/documentation/inputmethodkit/imkinputcontroller)の説明によれば、クライアントアプリが作る入力セッションには、`IMKServer`が生成する入力コントローラが1つ対応する。`IMKInputController`はその基底クラスであり、入力イベントと変換後の文字列を取り扱う。
+
+azooKeyでは、[`AppDelegate.applicationDidFinishLaunching`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/AppDelegate.swift)が`IMKServer(name:bundleIdentifier:)`を生成する。[`azooKeyMac/Info.plist`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/Info.plist)の`InputMethodConnectionName`は接続名を、`InputMethodServerControllerClass`は`azooKeyMacInputController`を指定する。`IMKServer`はこの設定からコントローラのクラスを特定する（[Appleの初期化仕様](https://developer.apple.com/documentation/inputmethodkit/imkserver/init%28name%3Abundleidentifier%3A%29)）。
+
+`azooKeyMacInputController: IMKInputController`という宣言は、**azooKeyのクラスがIMKの基底クラスを継承する**ことを意味する。OS側が要求する`init(server:delegate:client:)`、`activateServer`、`deactivateServer`などの契機に応じて、入力イベントを`SegmentsManager`に伝え、クライアントの未確定文字列や候補表示を更新する。入力セッションごとにこのクラスのインスタンスが増えるため、その中で生成するオブジェクトもセッション数に比例する。
+
+```text
+Chrome等の入力先アプリ（編集コンテキスト）
+  → macOSのテキスト入力基盤
+  → IMKServer（azooKeyプロセスで接続を管理）
+  → azooKeyMacInputController : IMKInputController（セッションごと）
+      ├─ SegmentsManager（未確定文字列・個別の変換状態）
+      │   └─ KanaKanjiConverter（エンジン本体はプロセス内で共有）
+      └─ NSWindow × 4（現在はコントローラごとに確保）
+          └─ WindowServerが管理するウィンドウ
+```
+
+Chromeのタブ・ページ・編集欄のどれが新しい入力セッションに対応するかは、IMKの公開仕様だけでは確定できない。今回の`init`ログから、Chromeの操作によって複数のコントローラが生成されることが分かる。
+
 入力処理には、入力先アプリケーション、macOSの入力基盤、azooKey、およびウィンドウ管理機構が関与する。
 
 | 要素 | 主な責任 | 今回の現象との関係 |
@@ -38,6 +61,26 @@ AppKitの[`NSWindow.orderOut(_:)`](https://developer.apple.com/documentation/app
 コントローラが保有するウィンドウは、`activateServer()`や`deactivateServer()`で表示状態を切り替える。コントローラが生存する間は、表示していないウィンドウも保持される。この**セッション単位で4枚を先行確保する方式はazooKey側の設計判断**であり、IMKが4枚のウィンドウを要求しているわけではない。
 
 なお、変換器は[`AppDelegate.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/AppDelegate.swift)で共有され、[`SegmentsManager.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/Core/Sources/Core/InputUtils/SegmentsManager.swift)が変換セッションを個別に作成・破棄する。**UIのウィンドウ4枚とZenzaiのモデル4個は対応しない。**
+
+### 同じ初期サイズのウィンドウを3枚生成する理由
+
+**3枚は、それぞれ独立した候補表示機能に対応する。** [`azooKeyMacInputController.init`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/InputController/azooKeyMacInputController.swift)で次の3組の`NSViewController`と`NSWindow`を、用途ごとに生成する。
+
+| 保持プロパティ | 表示する内容 | 表示契機 |
+| --- | --- | --- |
+| `candidatesWindow` | 通常のかな漢字変換候補 | `refreshCandidateWindow()`。選択中または入力中に候補を表示するとき |
+| `predictionWindow` | 入力中の予測・補完候補 | `refreshPredictionWindow()`。`.composing`状態で予測候補があるとき |
+| `replaceSuggestionWindow` | AIによる文章置換の候補 | `requestReplaceSuggestion()`。AIバックエンドを利用し、置換候補が返ったとき |
+
+`makeCandidateWindow()`は共通の`candidateWindowInitialSize = 400×1000`を設定し、レベルを`.popUpMenu`に変更した後、`setIsVisible(false)`と`orderOut(nil)`で隠す。**400×1000は生成直後の共通初期サイズであり、実際の候補表示領域や最大サイズを意味しない。** このため、機能の異なる3枚がWindowServerの一覧では同じサイズ・レイヤーで現れる。
+
+予測候補は通常候補と独立した`NSWindow`であり、`positionPredictionWindowRightOfCandidateWindow()`が両者の横並び表示を扱う。したがって、通常候補と予測候補は同時表示し得る。一方、置換候補には専用の`InputState.replaceSuggestion`と非同期AI処理があり、通常の変換とは異なる経路から`makeKeyAndOrderFront(nil)`で表示される。**3枚を同時生成する設計は意図的だが、3枚の同時表示が必要なわけではない。**
+
+さらに、[`PromptInputWindow`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/Windows/PromptInput/PromptInputWindow.swift)を4枚目として生成する。SwiftUIを内包するこの画面はプロンプト入力時に使うため、通常の候補表示とは別の機能に属する。`360×310`という観測サイズは、このウィンドウの`resizeWindowToContent()`が通常表示時に計算するサイズと一致する。
+
+この構成は**azooKeyの現行コードに照らして想定どおり**であり、IMKが3枚の候補ウィンドウを生成する仕様ではない。IMKは[`IMKCandidates`](https://developer.apple.com/documentation/inputmethodkit/imkcandidates)も提供するが、その利用は任意である。azooKeyは候補リストを独自のAppKitビューで構築している。
+
+特に文章置換用ウィンドウは、AI機能を利用しない入力セッションでも`init`時に確保される。ここには遅延生成の余地がある。ただし、3枚の機能を1枚に統合する場合は通常候補と予測候補の同時表示を維持する必要があり、実装が単純になるとは限らない。
 
 ## 検証方法
 
@@ -107,11 +150,83 @@ Chromeで新しいサイトや編集コンテキストを有効にすると、�
 
 標準IMEにも入力コンテキストに応じた状態の管理が必要だが、`IMKInputController`や`NSWindow`の利用方法、プロセス間の役割分担は確認していない。標準IMEでも同種の資源増加が起こり得る一方、具体的なウィンドウ枚数は実装方式に左右される。比較ではプロセス構成を先に調べ、ウィンドウ数だけでなく物理メモリ・CPU負荷を同一操作条件で測定する。
 
+## WindowServerのCPU・メモリ負荷を調べる実験設計
+
+### 目的と仮説
+
+検証するのは、**入力セッション数に比例したウィンドウの保持が、WindowServerとazooKeyの負荷をどの程度増やすか**である。以下の仮説を分けて扱う。
+
+1. **生成・解放の規則性**：同時に生存するコントローラが1個増えると、未使用の候補ウィンドウを含めて原則4枚増える。`deinit`後には4枚減る。
+2. **保持時の負荷**：表示していないウィンドウが多いほど、WindowServerのCPU使用率やメモリ使用量が増える。増加しなければ、枚数だけでは対策の根拠にならない。
+3. **IME固有の寄与**：同じChrome操作で、azooKeyと標準日本語入力を比べたときに負荷の増加量が異なる。
+
+これらは独立に検証する。ウィンドウ数が増えたという観測から、CPU負荷やメモリ使用量も増えたとは推定しない。
+
+### 比較条件と操作
+
+Chromeの同一ローカルHTMLページに`textarea`を1個だけ設け、タブを複製して入力欄を有効にする。各タブの表示は静止させる。入力欄の内容を繰り返し変更する試験とは分け、**まず不可視ウィンドウを保持しただけの待機時負荷**を測る。
+
+| 条件 | 比較対象 | 操作 |
+| --- | --- | --- |
+| A | azooKey | 基準状態からタブを段階的に追加する。追加数の目安を0、5、10、20とし、実際の`init`件数を記録する |
+| B | Apple標準日本語入力 | Aと同じChromeのページ、タブ操作、待機時間を再現する |
+| C | azooKey | Aで追加したタブを段階的に閉じ、`deinit`件数と負荷の回復を確認する |
+
+AとBでは、Chrome自身のタブ・レンダラによる負荷も変わる。両者を同一条件で比較してIME固有の差を推定する。ただし標準IMEは内部のプロセス構成が異なる可能性があるため、所有ウィンドウ数の直接比較だけで評価しない。
+
+各段階では、ページ表示と入力ソースの切替を終えてから**15～30秒待機し、その後60秒程度を計測**する。操作順序による影響を避けるため、AとBの実施順を入れ替えながら各条件を最低3回繰り返す。画面解像度、外部ディスプレイ、リフレッシュレート、前面のタブ、電源状態、起動中のアプリを固定し、動画・アニメーション・通知を避ける。
+
+### 計測する指標と取得方法
+
+| 指標 | 取得方法 | 解釈上の注意 |
+| --- | --- | --- |
+| azooKeyの所有ウィンドウ数、サイズ、ID | `window-lifecycle-snapshot.swift --ids` | 生存中のウィンドウ数を測る。CPU・物理メモリの代理指標とはしない |
+| azooKeyコントローラの生成・破棄 | `[WindowLifecycle]`ログ | 実際のセッション数に対応付け、タブ数と混同しない |
+| WindowServerのCPU使用率 | `ps -p <PID> -o %cpu`を継続記録 | 直近の使用率を表す近似値。単一時点でなく分布と中央値を比較する |
+| WindowServerのRSS | `ps -p <PID> -o rss`、アクティビティモニタ | RSSは共有領域等を含む。GPU資源や正確な増分費用を単独では表さない |
+| azooKeyのRSS・Physical footprint | `ps`、`vmmap -summary` | RSSとPhysical footprintを区別する。後者は各段階の前後で取得する |
+| CoreAnimation・IOSurface | azooKeyに対する`vmmap -summary` | ウィンドウ数と領域の増減を併記する。領域の仮想サイズを物理消費量とみなさない |
+| システム全体のメモリ状態 | アクティビティモニタのメモリプレッシャー・スワップ使用量 | WindowServer単体の負荷とシステム全体の状態を区別する |
+
+以下はWindowServerとazooKeyの`%CPU`とRSSを2秒間隔で約60秒記録する最小例である。実行前に同じターミナルで`run_name`を条件ごとに変更する。出力のRSSはKiB単位である。
+
+```zsh
+ws_pid=$(pgrep -x WindowServer | head -n 1)
+ime_pid=$(pgrep -x azooKeyMac | head -n 1)
+run_name=azookey-5-tabs
+outfile="/tmp/windowserver-${run_name}.csv"
+printf 'timestamp,process,pid,cpu_percent,rss_kib\n' > "$outfile"
+
+for i in {1..30}; do
+  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  for target in "WindowServer:$ws_pid" "azooKey:$ime_pid"; do
+    name=${target%%:*}
+    pid=${target##*:}
+    ps -p "$pid" -o %cpu=,rss= |
+      awk -v time="$timestamp" -v name="$name" -v pid="$pid" \
+        'NF >= 2 {print time "," name "," pid "," $1 "," $2}'
+  done
+  sleep 2
+done >> "$outfile"
+
+swift Tools/window-lifecycle-snapshot.swift "$ime_pid" --ids \
+  > "/tmp/windows-${run_name}.txt"
+vmmap -summary "$ime_pid" > "/tmp/vmmap-${run_name}.txt"
+```
+
+`ps`の`%CPU`は厳密な2秒間平均ではないため、まず条件間の概略比較に使う。CPUの時間変化を詳しく検証する場合はmacOSの`top -l`による連続採取やInstrumentsを併用する。WindowServerは保護されたプロセスのため、`vmmap`による詳細取得が権限上できない場合がある。その場合はアクティビティモニタの表示値を併記し、推測で補わない。
+
+### 判定と追加実験
+
+各条件で安定待機時のCPU使用率の中央値、RSSの前後差、ウィンドウ枚数、`init−deinit`の累積差を対応付ける。WindowServerのCPUはOS全体の描画処理にも左右されるため、**同一IME内の増分と標準IMEとの差分**を併記する。増加・減少を繰り返した際の回復も、リークと一時的なキャッシュ・正常保持を区別する材料になる。
+
+保持時に明確な負荷があれば、次に診断用ビルドで「同数の入力セッションを保持したまま、候補ウィンドウの生成方式だけを変える」対照実験を行う。これにより、ChromeのタブやIMKのセッションそのものによる負荷と、azooKeyが先行確保する`NSWindow`の負荷を切り分ける。UIを省略する検証ビルドは機能上の互換性を保証しないため、診断用途に限定する。
+
 ## 次のタスク
 
 - [ ] **標準IMEとの比較**：同じChrome操作で、日本語標準入力の関連プロセス・ウィンドウ数・Physical footprint・WindowServer負荷を調べる。
 - [ ] **入力セッションの寿命を追跡**：タブ開閉、ページ遷移、複数アプリ間の移動で`init`・`willClose`・`deinit`を照合し、終了済みセッションに属するウィンドウの残留が再現するか確認する。
-- [ ] **セッション数と負荷の関係を測定**：同時に存在する入力コンテキスト数を変え、azooKeyのPhysical footprint、CoreAnimation・IOSurface、WindowServerのCPU使用率とメモリ負荷の増分を求める。
+- [ ] **セッション数と負荷の関係を測定**：本書の条件A～Cを実行し、コントローラ数・ウィンドウ数に対するPhysical footprint、CoreAnimation・IOSurface、WindowServerのCPU・RSSの増分と回復を確認する。
 - [ ] **仕様変更の要否を判断**：実測した負荷と初回表示性能を評価し、現行維持、遅延生成、共有、非アクティブ時破棄の費用対効果を比較する。
 - [ ] **上流Issueへの共有**：再現条件と測定結果に基づき、[azooKey-Desktop #348](https://github.com/azooKey/azooKey-Desktop/issues/348)に現象の解釈と改善の必要性を報告する。
 
