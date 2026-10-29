@@ -212,6 +212,17 @@ SETTLE_SECONDS=10 DURATION_SECONDS=10 TAB_STEPS="2 4" \
 
 保持時に明確な負荷があれば、次に診断用ビルドで「同数の入力セッションを保持したまま、候補ウィンドウの生成方式だけを変える」対照実験を行う。これにより、ChromeのタブやIMKのセッションそのものによる負荷と、azooKeyが先行確保する`NSWindow`の負荷を切り分ける。UIを省略する検証ビルドは機能上の互換性を保証しないため、診断用途に限定する。
 
+### macOSセルフホストランナーでの実行状況（2026-10-29）
+
+[診断ブランチ上のmacOS専用Workflow](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/.github/workflows/windowserver-smoke.yml)を作成し、`azooKey-Desktop`リポジトリに登録された`asanoMBPro`（macOS 15.8.1、ユーザー`kasano`）で短時間のスモークテストを2回実行した。
+
+- [初回実行](https://github.com/Amatubamem/azooKey-Desktop/actions/runs/40884828882)：ランナー接続、checkout、Bashの構文検査に成功した。入力欄をクリックしても計測用スクリプトがウィンドウの増加を検出できず、負荷測定前に停止した。
+- [GUI環境の追加診断](https://github.com/Amatubamem/azooKey-Desktop/actions/runs/40885141263)：`azooKeyMac`（PID 17672）、WindowServer（PID 432）、Chromeのウィンドウ3枚、前面アプリChrome、選択中の入力ソース`dev.kasano.inputmethod.azooKeyMac.Japanese`を確認した。一方、同じランナーから`CGWindowListCopyWindowInfo(.optionAll, ...)`を呼ぶと**全アプリを合わせて0枚**だった。
+
+**現状の障害は、ランナーからCoreGraphicsのウィンドウ一覧を取得できないことである。** 0枚は実際にウィンドウが存在しないことを意味しない。ランナーのLaunchAgentによるGUIセッションへのアクセス、画面収録に関するTCC権限、実行プロセスの権限を切り分ける必要がある。AppleScriptによるクリック自体はエラーを出していないが、入力欄へのフォーカスと新規`IMKInputController.init`の成立は未確認である。
+
+現在のスモークテストは、実際のウィンドウ増加を検証できなければ中断する。そのため、有効な負荷比較結果はまだ得られていない。次は対話的なターミナルとLaunchAgentの双方から同じCoreGraphics列挙を行い、取得件数を比較する。実行環境の差異を解消してから、タブ追加による4枚単位の増減試験を再実施する。
+
 ## 次のタスク
 
 - [ ] **標準IMEとの比較**：同じChrome操作で、日本語標準入力の関連プロセス・ウィンドウ数・Physical footprint・WindowServer負荷を調べる。
