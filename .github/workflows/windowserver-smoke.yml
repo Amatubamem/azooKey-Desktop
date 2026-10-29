@@ -57,6 +57,31 @@ jobs:
           echo "Selected input source:"
           swift -e 'import Carbon; if let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(), let raw = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) { print(Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue()) }' || true
 
+      - name: Verify screen-capture and Accessibility access
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift -e '
+          import CoreGraphics
+          import ApplicationServices
+          import Foundation
+          print("screen_recording_preflight=\(CGPreflightScreenCaptureAccess())")
+          print("accessibility_preflight=\(AXIsProcessTrusted())")
+          let windowList = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID)
+          if let list = windowList as? [[String: Any]] {
+            print("cg_window_list_nil=false")
+            print("cg_total_windows=\(list.count)")
+            if list.count == 0 {
+              fputs("CGWindowListCopyWindowInfo returned zero windows. GUI benchmark cannot validate session creation.\\n", stderr)
+              exit(2)
+            }
+          } else {
+            print("cg_window_list_nil=true")
+            fputs("CGWindowListCopyWindowInfo returned nil. GUI benchmark cannot run.\\n", stderr)
+            exit(2)
+          }
+          '
+
       - name: Exercise real Chrome input focus and measure WindowServer
         shell: bash
         env:
