@@ -36,9 +36,9 @@ fi
 
 # 中間生成物を再利用して、変更した部分だけを再ビルドする。
 if command -v xcpretty &> /dev/null; then
-    xcodebuild -project azooKeyMac.xcodeproj -scheme azooKeyMac -configuration Release -destination 'generic/platform=macOS' -derivedDataPath "${REPO_ROOT}/build/DerivedData" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO build | xcpretty
+    xcodebuild -project azooKeyMac.xcodeproj -scheme azooKeyMac -configuration Release -destination 'generic/platform=macOS' -derivedDataPath "${REPO_ROOT}/build/DerivedData" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO ARCHS=arm64 build | xcpretty
 else
-    xcodebuild -project azooKeyMac.xcodeproj -scheme azooKeyMac -configuration Release -destination 'generic/platform=macOS' -derivedDataPath "${REPO_ROOT}/build/DerivedData" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO build
+    xcodebuild -project azooKeyMac.xcodeproj -scheme azooKeyMac -configuration Release -destination 'generic/platform=macOS' -derivedDataPath "${REPO_ROOT}/build/DerivedData" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO ARCHS=arm64 build
 fi
 
 # バンドルIDが異なるアプリは、登録済みの入力メソッドとして更新しない。
