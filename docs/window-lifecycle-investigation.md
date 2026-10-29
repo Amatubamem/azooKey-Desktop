@@ -188,31 +188,21 @@ AとBでは、Chrome自身のタブ・レンダラによる負荷も変わる。
 | CoreAnimation・IOSurface | azooKeyに対する`vmmap -summary` | ウィンドウ数と領域の増減を併記する。領域の仮想サイズを物理消費量とみなさない |
 | システム全体のメモリ状態 | アクティビティモニタのメモリプレッシャー・スワップ使用量 | WindowServer単体の負荷とシステム全体の状態を区別する |
 
-以下はWindowServerとazooKeyの`%CPU`とRSSを2秒間隔で約60秒記録する最小例である。実行前に同じターミナルで`run_name`を条件ごとに変更する。出力のRSSはKiB単位である。
+実験用スクリプト[`Tools/windowserver-benchmark.sh`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/Tools/windowserver-benchmark.sh)は、Chromeの**専用ウィンドウだけ**をAppleScriptで操作する。入力欄のあるローカルHTMLページを自動生成し、タブを段階的に追加する。各タブに文字を入力して入力メソッドの生成を促し、操作後の待機・計測・ウィンドウ枚数の記録・タブの削除まで実行する。既存のChromeウィンドウは操作しない。作成した専用ウィンドウは正常終了時にも異常終了時にも可能な限り閉じる。
 
 ```zsh
-ws_pid=$(pgrep -x WindowServer | head -n 1)
-ime_pid=$(pgrep -x azooKeyMac | head -n 1)
-run_name=azookey-5-tabs
-outfile="/tmp/windowserver-${run_name}.csv"
-printf 'timestamp,process,pid,cpu_percent,rss_kib\n' > "$outfile"
+git switch diagnostics/window-lifecycle-348
+git pull --ff-only
+bash Tools/windowserver-benchmark.sh
 
-for i in {1..30}; do
-  timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  for target in "WindowServer:$ws_pid" "azooKey:$ime_pid"; do
-    name=${target%%:*}
-    pid=${target##*:}
-    ps -p "$pid" -o %cpu=,rss= |
-      awk -v time="$timestamp" -v name="$name" -v pid="$pid" \
-        'NF >= 2 {print time "," name "," pid "," $1 "," $2}'
-  done
-  sleep 2
-done >> "$outfile"
-
-swift Tools/window-lifecycle-snapshot.swift "$ime_pid" --ids \
-  > "/tmp/windows-${run_name}.txt"
-vmmap -summary "$ime_pid" > "/tmp/vmmap-${run_name}.txt"
+# 試運転用：待機・計測を各10秒に短縮する
+SETTLE_SECONDS=10 DURATION_SECONDS=10 TAB_STEPS="2 4" \
+  bash Tools/windowserver-benchmark.sh
 ```
+
+既定の測定は`tabs_0`→`tabs_5`→`tabs_10`→`tabs_20`→`tabs_closed`の5段階で行う。各段階で60秒待機した後、約60秒間、2秒間隔でWindowServerとazooKeyの`%CPU`・RSSを記録する。生成される`metrics.csv`、`phases.csv`、各段階のウィンドウID一覧、`vmmap`は実行時に表示する専用の一時ディレクトリへ保存する。`phases.csv`に記録されるのは実測したウィンドウ数であり、タブ数とコントローラ数を同一視しない。
+
+**実行前にmacOSの入力ソースをazooKeyへ切り替える。** 初回はターミナルからGoogle Chromeを操作する自動化権限と、`System Events`によるキー入力のアクセシビリティ権限が要求される場合がある。入力ソースの切替自体は自動化していない。また、ページ上の`textarea`へキー入力する方式でも、Chromeが追加した各タブに新しいIMKセッションを作る保証はない。`phases.csv`やライフサイクルログで実際の増加数を確認する。
 
 `ps`の`%CPU`は厳密な2秒間平均ではないため、まず条件間の概略比較に使う。CPUの時間変化を詳しく検証する場合はmacOSの`top -l`による連続採取やInstrumentsを併用する。WindowServerは保護されたプロセスのため、`vmmap`による詳細取得が権限上できない場合がある。その場合はアクティビティモニタの表示値を併記し、推測で補わない。
 
