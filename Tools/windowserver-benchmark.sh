@@ -1,6 +1,7 @@
 #!/bin/bash
 # Compare WindowServer/azooKey idle load while creating and closing Chrome input tabs.
 # macOS only. Chrome Apple Events and System Events Accessibility permissions may be required.
+# A real GUI click is essential: a new tab alone need not create an IMK session.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -58,9 +59,9 @@ cat > "$seed_html" <<'HTML'
 HTML
 cat > "$test_html" <<'HTML'
 <!doctype html><html lang="ja"><meta charset="utf-8"><title>azooKey benchmark input</title>
-<body><textarea id="input" autofocus rows="3" cols="40"></textarea>
-<script>window.addEventListener('load', () => document.getElementById('input').focus());</script>
-</body></html>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}
+textarea{box-sizing:border-box;display:block;width:100vw;height:100vh;border:0;resize:none;font-size:16px}</style>
+<body><textarea id="input" aria-label="Input session benchmark"></textarea></body></html>
 HTML
 
 cat > "$control_script" <<'APPLESCRIPT'
@@ -80,19 +81,18 @@ on run argv
 
         if commandName is "add" then
             set testURL to item 3 of argv
-            set additions to (item 4 of argv) as integer
             activate
             set index of testWindow to 1
-            repeat additions times
-                tell testWindow
-                    make new tab at end of tabs with properties {URL:testURL}
-                    set active tab index to count of tabs
-                end tell
-                delay 0.8
-                tell application "System Events" to keystroke "a"
-                delay 0.2
-            end repeat
+            tell testWindow
+                make new tab at end of tabs with properties {URL:testURL}
+                set active tab index to count of tabs
+            end tell
+            delay 0.8
+            my clickInput(testWindow)
             return (count of tabs of testWindow) as text
+        else if commandName is "focus" then
+            my clickInput(testWindow)
+            return "clicked"
         else if commandName is "close" then
             set seedURL to item 3 of argv
             -- Close only a window still marked as belonging to this run.
@@ -106,6 +106,28 @@ on run argv
         error "Unknown benchmark command."
     end tell
 end run
+
+-- Chrome's bounds use the global top-left screen coordinate system.
+-- The test textarea fills the content viewport, so a click at the window's
+-- centre targets the input area in an ordinary, unobstructed Chrome window.
+on clickInput(testWindow)
+    tell application "Google Chrome"
+        activate
+        set index of testWindow to 1
+        set {leftEdge, topEdge, rightEdge, bottomEdge} to bounds of testWindow
+    end tell
+    if (rightEdge - leftEdge) < 350 or (bottomEdge - topEdge) < 320 then
+        error "The Chrome benchmark window is too small for reliable input clicking."
+    end if
+    set clickX to (leftEdge + rightEdge) div 2
+    set clickY to (topEdge + bottomEdge) div 2
+    tell application "System Events"
+        tell process "Google Chrome"
+            set frontmost to true
+            click at {clickX, clickY}
+        end tell
+    end tell
+end clickInput
 APPLESCRIPT
 
 test_window_id=""
@@ -121,6 +143,7 @@ echo "Output directory: $output_dir"
 echo "Only a dedicated Chrome window is modified; existing windows are left intact."
 echo "The active macOS input source must be azooKey before starting."
 echo "Chrome Automation / System Events Accessibility permissions may be requested."
+echo "Each input tab is physically clicked; the azooKey window count is validated."
 test_window_id="$(osascript "$control_script" create "$seed_url" | tr -d '[:space:]')"
 if ! [[ "$test_window_id" =~ ^[0-9]+$ ]]; then
   echo "Could not get the test Chrome window ID: $test_window_id" >&2
@@ -135,6 +158,13 @@ snapshot() {
   local phase="$1" when="$2"
   swift "$repo_root/Tools/window-lifecycle-snapshot.swift" "$ime_pid" --ids \
     > "$output_dir/windows-${phase}-${when}.txt"
+}
+
+# Count actual azooKey windows, not Chrome tabs. Failed focus must not be
+# recorded as a successful input-session increase.
+window_count() {
+  swift "$repo_root/Tools/window-lifecycle-snapshot.swift" "$ime_pid" |
+    sed -n '1s/.* windows=\([0-9][0-9]*\).*/\1/p'
 }
 
 measure() {
@@ -165,13 +195,40 @@ measure() {
 
 added_tabs=0
 measure tabs_0
+previous_windows="$(window_count)"
 
 for count in "${tab_steps[@]}"; do
   additions=$((count - added_tabs))
-  echo "Creating $additions test tabs (total $count)..."
-  osascript "$control_script" add "$test_window_id" "$test_url" "$additions" >/dev/null
+  echo "Creating and clicking $additions input tabs (total $count)..."
+  for ((tab = 0; tab < additions; tab++)); do
+    # Use a unique fragment to keep each test tab distinguishable.
+    tab_url="${test_url}#session-$((added_tabs + tab + 1))"
+    osascript "$control_script" add "$test_window_id" "$tab_url" >/dev/null
+    sleep 1
+    after_windows="$(window_count)"
+    if (( after_windows <= previous_windows )); then
+      echo "No new azooKey window detected; retrying the input click..."
+      osascript "$control_script" focus "$test_window_id" >/dev/null
+      sleep 1
+      after_windows="$(window_count)"
+    fi
+    if (( after_windows <= previous_windows )); then
+      echo "ERROR: Input click produced no additional azooKey windows." >&2
+      echo "Check that azooKey is the active input source and Chrome's" >&2
+      echo "Automation/Accessibility permissions allow clicking." >&2
+      echo "The run is aborted rather than reporting invalid measurements." >&2
+      exit 1
+    fi
+    delta=$((after_windows - previous_windows))
+    if (( delta != 4 )); then
+      echo "WARNING: The input click added $delta windows, not the expected 4."
+    fi
+    echo "  input tab $((added_tabs + tab + 1)): $previous_windows -> $after_windows windows"
+    previous_windows=$after_windows
+  done
   added_tabs=$count
   measure "tabs_$count"
+  previous_windows="$(window_count)"
 done
 
 echo "Closing the dedicated Chrome window..."
