@@ -562,10 +562,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         client.overrideKeyboard(withKeyboardNamed: Config.KeyboardLayout().value.layoutIdentifier)
         switch language {
         case .english:
-            client.selectMode("dev.ensan.inputmethod.azooKeyMac.Roman")
+            client.selectMode("dev.kasano.inputmethod.azooKeyMac.Roman")
             self.segmentsManager.stopJapaneseInput()
         case .japanese:
-            client.selectMode("dev.ensan.inputmethod.azooKeyMac.Japanese")
+            client.selectMode("dev.kasano.inputmethod.azooKeyMac.Japanese")
         }
     }
 

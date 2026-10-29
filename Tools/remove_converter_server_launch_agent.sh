@@ -2,7 +2,7 @@
 set -eu
 
 # XPC版からのアップグレード時に、KeepAlive付きの旧変換プロセスを停止する。
-service_name="dev.ensan.inputmethod.azooKeyMac.ConverterServer"
+service_name="dev.kasano.inputmethod.azooKeyMac.ConverterServer"
 system_agent_path="/Library/LaunchAgents/${service_name}.plist"
 
 if [ "$(id -u)" -ne 0 ]; then

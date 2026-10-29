@@ -66,7 +66,7 @@ chmod +x "${PKG_SCRIPTS_PATH}/postinstall" "${PKG_SCRIPTS_PATH}/remove_converter
 # Create a temporary package
 pkgbuild --root ${EXPORT_PATH} \
          --scripts ${PKG_SCRIPTS_PATH} \
-         --component-plist pkg.plist --identifier dev.ensan.inputmethod.azooKeyMac \
+         --component-plist pkg.plist --identifier dev.kasano.inputmethod.azooKeyMac \
          --version 0 \
          --install-location /Library/Input\ Methods \
          azooKey-tmp.pkg
