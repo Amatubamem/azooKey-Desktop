@@ -20,6 +20,17 @@
 | `chore(local)` | Personal Team向けの署名と識別子を変更する | 独自版の署名・バンドルID・App Group・設定キーを維持する |
 | `build(local)` | 独自版のビルドとインストールを整える | 個人用の設定を維持し、正式版で修正済みの対処は取り除く |
 | `feat(memory)` | 学習データの閲覧・編集と、TSVの書き出しを追加する | データを保全し、並べ替え時の選択を維持する |
+| `feat(input)` | 入力表を通した入力で、Backspaceがかな変換単位で削除する | 維持する |
+
+### Backspaceのかな単位削除
+
+`Core/Sources/Core/InputUtils/SegmentsManager.swift`の`deleteBackwardFromCursorPosition`と`deleteBackwardByKanaUnit`を変更した。テストは`Core/Tests/CoreTests/InputUtilsTests/BackspaceByKanaUnitTests.swift`にある。
+
+かな単位の削除は、末尾の入力が入力表`.mapped`を通した場合に働く。正式版で`SegmentsManager.swift`の削除処理が変わった場合は、衝突を解消した後に回帰テストで動作を確かめる。
+
+```zsh
+swift test --package-path Core --filter backspaceDeletesLastKanaConversionUnit
+```
 
 ### Zenzaiのモデルのパス
 
@@ -173,6 +184,7 @@ Git情報の生成処理はupstreamに合わせて戻した。生成する内容
 |---|---|---|
 | Zenzaiの読込 | 日本語を1回変換してから`lsof -Fn -p $(pgrep -x azooKeyMac) \| grep gguf`を実行する | ggufのパスが表示される |
 | 権限の確認ダイアログ | IMEを起動した後に`/usr/bin/log show --last 5m --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "AUTHREQ_PROMPTING" AND eventMessage CONTAINS "azooKey"'`を実行する | 何も表示されない |
+| Backspace | カスタムAZIK表で`kgp`と入力してBackspaceを押す | 「きょう」がまとめて消える |
 | 学習データの編集 | 設定画面の「履歴学習データ」の「編集」で項目を削除し、続けて削除した項目の読みを変換する | 削除した表記が候補に出ない |
 
 ## データの保存場所

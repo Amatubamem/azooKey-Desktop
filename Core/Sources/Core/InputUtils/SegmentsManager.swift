@@ -385,8 +385,53 @@ public final class SegmentsManager {
         self.updateRawCandidate()
     }
 
+    /// AZIKなどのカスタム入力では、末尾のかな変換単位をまとめて削除する。
+    /// 独立セグメントは「ん」+ 後続子音を含む場合があるため、
+    /// 最短の末尾入力で生成できるかなから優先的に削除する。
+    @MainActor
+    private func deleteBackwardByKanaUnit() {
+        let input = self.composingText.input
+        guard self.composingText.isAtEndIndex,
+              let last = input.last,
+              last.piece != .compositionSeparator else {
+            self.composingText.deleteBackwardFromCursorPosition(count: 1)
+            return
+        }
+
+        let surface = self.composingText.convertTarget
+        for length in 1...min(input.count, 12) {
+            var suffix = ComposingText()
+            suffix.insertAtCursorPosition(Array(input.suffix(length)))
+            let convertedSuffix = suffix.convertTarget
+            guard !convertedSuffix.isEmpty,
+                  surface.hasSuffix(convertedSuffix) else {
+                continue
+            }
+            self.composingText.deleteBackwardFromCursorPosition(count: convertedSuffix.count)
+            return
+        }
+
+        // 前方の入力に依存する特殊規則では、変換エンジンの独立境界を用いる。
+        let boundaries = self.composingText.inputIndexToSurfaceIndexMap().keys
+        let unitStart = boundaries.filter { $0 < input.count }.max() ?? 0
+        var remaining = ComposingText()
+        remaining.insertAtCursorPosition(Array(input.prefix(unitStart)))
+        self.composingText = remaining
+    }
+
     @MainActor
     public func deleteBackwardFromCursorPosition(count: Int = 1) {
+        // 通常のローマ字入力と直接入力は既定の文字単位の削除を維持する。
+        let lastInputUsesMappedTable = self.composingText.input.last.map { element in
+            if case .mapped = element.inputStyle {
+                return true
+            }
+            return false
+        } ?? false
+        let shouldDeleteKanaUnit = count == 1
+            && self.composingText.isAtEndIndex
+            && lastInputUsesMappedTable
+        let previousSurfaceCount = self.composingText.convertTarget.count
         var previousComposingText = self.composingText.prefixToCursorPosition()
         if !self.composingText.isAtEndIndex {
             // 右端に持っていく
@@ -395,7 +440,12 @@ public final class SegmentsManager {
             self.didExperienceSegmentEdition = false
             previousComposingText = self.composingText.prefixToCursorPosition()
         }
-        self.composingText.deleteBackwardFromCursorPosition(count: count)
+        if shouldDeleteKanaUnit {
+            self.deleteBackwardByKanaUnit()
+        } else {
+            self.composingText.deleteBackwardFromCursorPosition(count: count)
+        }
+        let deletedMultipleKana = previousSurfaceCount - self.composingText.convertTarget.count > 1
         self.lastOperation = .delete
         // ライブ変換がオフの場合は変換候補ウィンドウを出したい
         self.shouldShowCandidateWindow = !self.liveConversionEnabled
@@ -406,7 +456,7 @@ public final class SegmentsManager {
             return
         }
         let currentConvertTarget = self.composingText.convertTarget
-        guard count == 1 else {
+        guard count == 1, !deletedMultipleKana else {
             self.backspaceAdjustedPredictionCandidate = nil
             self.backspaceTypoCorrectionLock = nil
             return
