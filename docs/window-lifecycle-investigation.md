@@ -1,77 +1,118 @@
-# 入力セッションに伴う不可視ウィンドウの生成・解放調査
+# 入力セッションに伴う不可視ウィンドウの生成・資源管理調査
 
 調査日：2026年10月29日  
-対象：[azooKey-Desktop #348](https://github.com/azooKey/azooKey-Desktop/issues/348)  
-状態：原因調査中。確認したサイト開閉条件では解放漏れを再現していない。
+関連Issue：[azooKey-Desktop #348](https://github.com/azooKey/azooKey-Desktop/issues/348)  
+状態：**解放漏れを示す証拠は得られていない。正常なセッション保持に伴う資源増加を主因とする仮説を検証中。**
 
-## 背景と目的
+## 背景と調査方針
 
-azooKey-Desktopでは、長時間の使用後に不可視ウィンドウが多数残り、WindowServerの負荷が上がる現象が報告されている。入力セッションに応じた通常の資源確保と、終了後にも資源が残る不具合を区別する必要がある。
+azooKey-Desktop #348では、不可視ウィンドウが80枚、別環境では144枚存在し、WindowServerのCPU使用率も高かったと報告された。144枚の内訳は、`400×1000`が108枚、`360×310`が36枚であり、4枚単位の増加と一致する。報告者は解放漏れを疑っているが、入力セッションの生成数や終了時のウィンドウIDは追跡していない。なお、元Issueに関連して疑われていたデスクトップ切替不能の症状は、後に別アプリの問題と訂正されている。
 
-本調査では、入力コントローラの生成・破棄とウィンドウ番号の変化を対応付け、メモリ負荷を評価する。次にmacOS標準の日本語入力と比較し、azooKey側で資源管理を変更する必要があるか判断する。
+**現時点の見解は、入力セッションの粒度が細かく、通常の使用でも多数のウィンドウが確保されるというものである。** 今回の実測ではタブ終了後の正常な解放を確認した。このため、まず既存仕様の下での資源消費を調べ、負荷が問題となる場合に限り、azooKeyのUI生成・所有方式を変更する妥当性を評価する。
 
-## 検証条件と方法
+## 関連技術と責任分担
 
-macOS 15.8.1、Apple Silicon、個人用ビルド（Bundle ID：`dev.kasano.inputmethod.azooKeyMac`）で調査した。診断コードは`29aae1ee6c1b0309f4f9f9bcc33d9124d6ae07c8`を起点とする[`diagnostics/window-lifecycle-348`](https://github.com/Amatubamem/azooKey-Desktop/tree/diagnostics/window-lifecycle-348)に実装した。
+### 入力セッションの生成から表示まで
 
-`azooKeyMacInputController`の`init`、`inputControllerWillClose`、`deinit`をログに記録する。`init`時にはコントローラIDと4種類のウィンドウ番号も記録する。候補表示のたびに発生する`activate`と`deactivate`のログは省いた。
+入力処理には、入力先アプリケーション、macOSの入力基盤、azooKey、およびウィンドウ管理機構が関与する。
 
-WindowServer上の所有ウィンドウは[`Tools/window-lifecycle-snapshot.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/Tools/window-lifecycle-snapshot.swift)で列挙する。Chromeでサイトを開く前、開いた後、タブを閉じた後の枚数とウィンドウ番号を比較した。
+| 要素 | 主な責任 | 今回の現象との関係 |
+| --- | --- | --- |
+| Chromeなどの入力先アプリケーション | 入力欄・編集コンテキストを管理し、macOSのテキスト入力機構と接続する | ページ遷移やタブの操作に伴い、入力セッションの生成・終了が変化する。Chrome内部のコンテキスト生成規則は未調査 |
+| InputMethodKit（IMK） | `IMKServer`がクライアント接続を扱い、入力セッションごとに`IMKInputController`を生成する | 入力セッション数に応じてコントローラ数が増える。セッションの寿命と生成頻度に関与する |
+| azooKey-Desktop | `IMKInputController`を継承し、変換状態、候補表示、プロンプト機能と各ウィンドウの所有を実装する | **コントローラを1つ生成するたびに4枚の`NSWindow`を確保する** |
+| AppKit | `NSWindow`や`NSViewController`の表示・非表示、オブジェクトの所有関係を提供する | `orderOut()`は非表示にするだけで解放しない。ウィンドウの寿命は所有元と解放処理によって決まる |
+| WindowServer・CoreGraphics | macOSのウィンドウを管理し、列挙用APIで状態を取得できるようにする | 不可視ウィンドウも一覧に含まれる。枚数と描画負荷は別の指標であり、CPU使用率との因果関係は未確定 |
+| KanaKanjiConverter・Zenzai | かな漢字変換と推論を担う | UIウィンドウの所有とは独立する。今回、GGUFモデルの重複マッピングは確認されていない |
+
+Appleの[InputMethodKit公式説明](https://developer.apple.com/documentation/inputmethodkit)は、クライアントが作成した入力セッションごとに`IMKServer`が`IMKInputController`を生成すると明記する。したがって、**セッション数の増加自体はIMKの設計と整合する**。一方、Chromeがタブ・ページ・編集欄のどの粒度でセッションを維持するかは、同説明からは決まらない。今回のログは、Chrome上で複数のセッションが生成されることを示している。
+
+AppKitの[`NSWindow.orderOut(_:)`](https://developer.apple.com/documentation/appkit/nswindow/orderout%28_%3A%29)は、ウィンドウを隠すが解放しない。これは非アクティブ化のたびにウィンドウを再作成しないための通常のAPI動作である。[`CGWindowListCopyWindowInfo`](https://developer.apple.com/documentation/coregraphics/cgwindowlistcopywindowinfo%28_%3A_%3A%29)はWindowServerが管理するウィンドウの情報を返すため、`onscreen=false`のウィンドウが存在することだけでは残留を証明できない。
+
+### azooKey固有の所有方式
+
+[`azooKeyMacInputController.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/InputController/azooKeyMacInputController.swift)では、`init`の際に`CandidatesViewController`、`PredictionCandidatesViewController`、`ReplaceSuggestionsViewController`を生成し、それぞれの`NSWindow`を作る。`makeCandidateWindow()`が設定する初期サイズは`400×1000`である。
+
+同じ`init`で[`PromptInputWindow`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/Windows/PromptInput/PromptInputWindow.swift)も生成する。こちらはSwiftUIの入力画面を含む独自の`NSWindow`であり、観測した`360×310`のウィンドウに対応する。候補ウィンドウの実装にはIMK標準の`IMKCandidates`を必須とせず、独自のAppKitビューを採用している。
+
+コントローラが保有するウィンドウは、`activateServer()`や`deactivateServer()`で表示状態を切り替える。コントローラが生存する間は、表示していないウィンドウも保持される。この**セッション単位で4枚を先行確保する方式はazooKey側の設計判断**であり、IMKが4枚のウィンドウを要求しているわけではない。
+
+なお、変換器は[`AppDelegate.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/AppDelegate.swift)で共有され、[`SegmentsManager.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/Core/Sources/Core/InputUtils/SegmentsManager.swift)が変換セッションを個別に作成・破棄する。**UIのウィンドウ4枚とZenzaiのモデル4個は対応しない。**
+
+## 検証方法
+
+環境はmacOS 15.8.1、Apple Silicon、個人用ビルド（Bundle ID：`dev.kasano.inputmethod.azooKeyMac`）とした。診断ブランチ[`diagnostics/window-lifecycle-348`](https://github.com/Amatubamem/azooKey-Desktop/tree/diagnostics/window-lifecycle-348)は、`29aae1ee6c1b0309f4f9f9bcc33d9124d6ae07c8`から作成した。
+
+コントローラの`init`、`inputControllerWillClose`、`deinit`を記録し、初期化時にはコントローラIDと4枚のウィンドウ番号を出力する。頻発する`activate`・`deactivate`は記録しない。所有ウィンドウは[`Tools/window-lifecycle-snapshot.swift`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/Tools/window-lifecycle-snapshot.swift)で列挙する。
 
 ```zsh
 pid=$(pgrep -x azooKeyMac | head -n 1)
 swift Tools/window-lifecycle-snapshot.swift "$pid" --ids
 
-# 別のターミナルでライフサイクルを監視する
+# 別のターミナルでコントローラの寿命を監視する
 log stream --style compact \
   --predicate 'process == "azooKeyMac" AND eventMessage CONTAINS "[WindowLifecycle]"'
+
+# メモリ負荷を記録する
+ps -o pid,rss,vsz,etime,command -p "$pid"
+vmmap -summary "$pid"
 ```
 
 ## 観測結果
 
-### 入力コントローラの生成とウィンドウの確保
+### 新規セッションの資源確保
 
-Chromeでは新しいサイトや入力コンテキストを有効にすると、入力コントローラの`init`が発生した。コントローラ1個の生成に対応して、不可視ウィンドウが4枚増加した。
+Chromeで新しいサイトや編集コンテキストを有効にすると、コントローラの`init`が実行され、不可視ウィンドウが4枚増えた。内訳は`400×1000 / layer 101`の3枚と、`360×310 / layer 3`の1枚であり、コード上の生成数・用途と一致する。
 
-| ウィンドウ | サイズ・レイヤー | 生成数 |
-| --- | --- | ---: |
-| 変換候補・予測候補・置換候補 | 400×1000、layer 101 | 3枚 |
-| プロンプト入力 | 360×310、layer 3 | 1枚 |
+長時間稼働した別プロセスでは、所有ウィンドウを155枚観測した。内訳のうち`400×1000 / layer 101`が108枚、`360×310 / layer 3`が38枚だった。残るウィンドウには表示に応じてサイズが変わったものも含まれるため、単純な総数だけから保持中のコントローラ数は確定できない。
 
-3枚の候補ウィンドウは、[`makeCandidateWindow()`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/InputController/azooKeyMacInputController.swift)の初期サイズと一致する。プロンプト入力用ウィンドウも同じ初期化処理で生成される。
+### タブ終了時の解放
 
-長時間稼働した別のプロセスでは、不可視ウィンドウを計155枚観測した。内訳には`400×1000 / layer 101`が108枚、`360×310 / layer 3`が38枚含まれた。観測した枚数だけでは、入力セッションが存続していたのか、資源が解放されずに残っていたのか判断できない。
+同じazooKeyプロセス（PID 14545）について、サイトを開く前後とタブ終了後を比較した。
 
-### Chromeのサイト開閉に伴う解放
-
-同一のazooKeyプロセス（PID 14545）で、サイトの開閉前後を測定した。
-
-| 状態 | 全ウィンドウ | 400×1000 | 360×310 |
+| 状態 | 総ウィンドウ数 | 400×1000 | 360×310 |
 | --- | ---: | ---: | ---: |
-| サイトを開く前 | 28 | 21 | 7 |
-| サイトを開いた後 | 32 | 24 | 8 |
-| タブを閉じた後 | 28 | 21 | 7 |
+| 開く前 | 28 | 21 | 7 |
+| 開いた後 | 32 | 24 | 8 |
+| タブ終了後 | 28 | 21 | 7 |
 
-サイトを開いたときに増えたウィンドウ番号は`51910`、`51911`、`51912`、`51913`であり、タブ終了後には4件とも消滅した。タブ終了時には、対応する入力コントローラの`deinit`も確認した。アプリケーション自体を終了した際にも`deinit`が発生する。
+開いた際に生成された`51910`、`51911`、`51912`、`51913`は、タブ終了後にすべて一覧から消えた。対応するコントローラの`deinit`も観測した。Chrome自体を終了した際にも`deinit`が発生した。
 
-### Zenzaiとメモリ使用量
+### メモリに関する観測範囲
 
-別の長時間稼働プロセスでは、`vmmap`に表示されたZenzaiのGGUFモデルのマッピングは1件だった。Physical footprintは400.6 MB、稼働中のピークは579.8 MBだった。この単一時点の測定では、継続的なメモリ増加の有無を判断できない。ウィンドウ数と物理メモリ負荷の関係も未測定である。
+別の長時間稼働プロセスでは、`vmmap`に表示されたGGUFモデルのマッピングは1件だった。Physical footprintは400.6 MB、稼働中のピークは579.8 MBだった。CoreAnimationやIOSurfaceの領域も存在するが、単一時点の測定ではセッション数に比例する実メモリ負荷や継続的な増加率を求められない。
 
-## 考察
+## 考察と設計上の判断
 
-**今回のサイト開閉条件では、入力コントローラと4枚のウィンドウが正常に解放された。** したがって、この操作は解放漏れの再現手順にはならない。
+### 現象は仕様に沿った資源増加と考えられる
 
-入力コンテキストに応じてコントローラが生成される一方、azooKeyは各コントローラの初期化時に表示用ウィンドウを4枚確保する。この組み合わせによって、同時に存在する入力セッションの数に応じてウィンドウが増加する。
+**現段階では、セッションの粒度が細かいために正常な使用でも多数のウィンドウが作成される、という解釈を採る。** 入力セッションごとにコントローラを生成するIMKの仕様と、コントローラごとにウィンドウを4枚確保するazooKeyの設計が、観測した4枚単位の増減を説明する。実際にタブ終了時の`deinit`とウィンドウの解放を確認した。
 
-InputMethodKit（IMK）やChromeが入力セッションを保持する条件、標準日本語入力での資源管理、[上流の報告](https://github.com/azooKey/azooKey-Desktop/issues/348)にあるWindowServer高負荷との因果関係は未確認である。現在の観測からは、入力コントローラ解放時の強制的なウィンドウ破棄や、プロセス全体でのウィンドウ共有を直ちに実装する根拠は得られていない。
+上流Issue #348のウィンドウ数と4枚単位の内訳も、この説明と整合する。既存報告には終了済みセッションのIDと残留ウィンドウIDを照合した結果がなく、リークを示す証拠は得られていない。一方、WindowServerの高CPU使用率は実際に報告されており、その原因・資源消費の妥当性は独立して検証する必要がある。
 
-## 次の検証
+**本件は、現状ではリーク修正よりも資源管理の設計上のトレードオフとして扱うのが妥当と考える。** セッションの粒度そのものは入力先アプリやIMKの管理に関わるため、azooKeyが直接統一できるものではない。ウィンドウ数を減らす場合は、azooKeyのウィンドウ生成時期や所有単位を変更することになる。
 
-- [ ] **標準日本語入力との比較**：Apple標準の「日本語 - ローマ字入力」で同じChrome操作を繰り返し、関連プロセス、所有ウィンドウ数、物理メモリ負荷を記録する。標準IMEのUIが別プロセスに分かれている場合は、その構成を確認する。
-- [ ] **セッションの寿命と残留条件の調査**：タブ終了、ページ遷移、タブ切替、Chrome終了について`init`・`willClose`・`deinit`とウィンドウIDの対応を記録する。終了済みコントローラのウィンドウが残る条件を探索する。
-- [ ] **資源負荷の定量化**：セッション数を段階的に変え、azooKeyのPhysical footprint、CoreAnimation・IOSurfaceの領域、WindowServerのCPU・メモリ負荷を測定する。起動直後と一定時間経過後を区別する。
-- [ ] **対策の要否を判断**：実測した負荷が問題となる場合に、ウィンドウの遅延生成と共有を比較する。メモリ削減効果、初回候補表示の遅延、セッション間の表示・デリゲートの切替を評価する。
-- [ ] **上流への報告**：再現条件と定量的な比較結果が得られた段階で、[azooKey-Desktop #348](https://github.com/azooKey/azooKey-Desktop/issues/348)に追記する。
+### 資源削減にはUIの設計変更が伴う
 
-診断ブランチのログとスナップショットは継続して使用する。調査結果の確定に合わせて本ファイルを更新する。
+| 方針 | 資源の持ち方 | 利点と代償 |
+| --- | --- | --- |
+| 現行方式を維持 | 各コントローラの`init`時に4枚生成する | 表示時に既存ウィンドウを再利用できる。セッション数に比例して資源が増える |
+| 遅延生成 | 候補・予測・プロンプトの各機能を初めて使用するときに生成する | 未使用機能のウィンドウを省ける。初回表示の応答、生成契機、破棄処理を再検証する必要がある |
+| ウィンドウ共有 | IMEプロセス内で表示用ウィンドウを共有する | セッション数に比例した生成を減らせる。アクティブなコントローラへの表示内容・デリゲート・フォーカスの切替が必要になる |
+| 非アクティブ時に破棄 | セッションを保持したまま表示用ウィンドウを解放・再生成する | 非使用時の保持量を減らせる。頻繁な切替時の生成コストとUI状態の復元が増える |
+
+いずれの方法も、**アプリケーション内部の所有方式や表示時の振る舞いを変える**。ウィンドウの共有は、入力セッション間の状態分離や候補選択の帰属に影響する。遅延生成も初回表示時の遅延を生むおそれがある。削減できるメモリ量やWindowServer負荷が未測定の段階では、どの変更が妥当か判断できない。
+
+### 比較対象としてのmacOS標準IME
+
+標準IMEにも入力コンテキストに応じた状態の管理が必要だが、`IMKInputController`や`NSWindow`の利用方法、プロセス間の役割分担は確認していない。標準IMEでも同種の資源増加が起こり得る一方、具体的なウィンドウ枚数は実装方式に左右される。比較ではプロセス構成を先に調べ、ウィンドウ数だけでなく物理メモリ・CPU負荷を同一操作条件で測定する。
+
+## 次のタスク
+
+- [ ] **標準IMEとの比較**：同じChrome操作で、日本語標準入力の関連プロセス・ウィンドウ数・Physical footprint・WindowServer負荷を調べる。
+- [ ] **入力セッションの寿命を追跡**：タブ開閉、ページ遷移、複数アプリ間の移動で`init`・`willClose`・`deinit`を照合し、終了済みセッションに属するウィンドウの残留が再現するか確認する。
+- [ ] **セッション数と負荷の関係を測定**：同時に存在する入力コンテキスト数を変え、azooKeyのPhysical footprint、CoreAnimation・IOSurface、WindowServerのCPU使用率とメモリ負荷の増分を求める。
+- [ ] **仕様変更の要否を判断**：実測した負荷と初回表示性能を評価し、現行維持、遅延生成、共有、非アクティブ時破棄の費用対効果を比較する。
+- [ ] **上流Issueへの共有**：再現条件と測定結果に基づき、[azooKey-Desktop #348](https://github.com/azooKey/azooKey-Desktop/issues/348)に現象の解釈と改善の必要性を報告する。
+
+調査が進んだ場合は、本メモに測定条件、増分、解釈の変更理由を追記する。
