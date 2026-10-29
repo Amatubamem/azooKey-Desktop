@@ -1,0 +1,62 @@
+name: azooKey WindowServer GUI smoke test
+
+# Intentionally scoped to an owner push on the diagnostics branch.
+# No pull_request, issues, or external-contributor event may run on a self-hosted Mac.
+on:
+  push:
+    branches:
+      - diagnostics/window-lifecycle-348
+    paths:
+      - .github/workflows/windowserver-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  macos-gui-smoke:
+    if: github.repository == 'Amatubamem/azooKey-Desktop' && github.actor == 'Amatubamem'
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 12
+    steps:
+      - name: Inspect runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'Runner: %s\nOS: %s\nUser: %s\n' "$RUNNER_NAME" "$RUNNER_OS" "$(id -un)"
+          sw_vers -productVersion
+          printf 'azooKey PID: '
+          pgrep -x azooKeyMac || true
+          printf 'WindowServer PID: '
+          pgrep -x WindowServer || true
+
+      - name: Checkout diagnostics branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n Tools/windowserver-benchmark.sh
+          echo 'Bash syntax: PASS'
+
+      - name: Exercise real Chrome input focus and measure WindowServer
+        shell: bash
+        env:
+          SETTLE_SECONDS: '5'
+          DURATION_SECONDS: '6'
+          TAB_STEPS: '1 2'
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          bash Tools/windowserver-benchmark.sh
+
+      - name: Upload measurement data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windowserver-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/azookey-windowserver.*/**
+          if-no-files-found: warn
+          retention-days: 3
