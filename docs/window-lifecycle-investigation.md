@@ -12,8 +12,6 @@ azooKey-Desktop #348では、不可視ウィンドウが80枚、別環境では1
 
 ## 関連技術と責任分担
 
-### 入力セッションの生成から表示まで
-
 ### InputMethodKitの仕組みとazooKeyへの接続
 
 [InputMethodKit](https://developer.apple.com/documentation/inputmethodkit)（IMK）は、macOSで日本語入力などの入力メソッドを実装するためのフレームワークであり、OSのText Services Managerと連携する。入力先アプリとの接続、入力イベント、未確定文字列、候補選択などを扱うためのAPIを提供する。変換アルゴリズムや候補画面の具体的なUIは、入力メソッドの実装が選択できる。
@@ -38,6 +36,8 @@ Chrome等の入力先アプリ（編集コンテキスト）
 Chromeのタブ・ページ・編集欄のどれが新しい入力セッションに対応するかは、IMKの公開仕様だけでは確定できない。今回の`init`ログから、Chromeの操作によって複数のコントローラが生成されることが分かる。
 
 入力処理には、入力先アプリケーション、macOSの入力基盤、azooKey、およびウィンドウ管理機構が関与する。
+
+### 入力セッションの生成から表示まで
 
 | 要素 | 主な責任 | 今回の現象との関係 |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ AppKitの[`NSWindow.orderOut(_:)`](https://developer.apple.com/documentation/app
 
 予測候補は通常候補と独立した`NSWindow`であり、`positionPredictionWindowRightOfCandidateWindow()`が両者の横並び表示を扱う。したがって、通常候補と予測候補は同時表示し得る。一方、置換候補には専用の`InputState.replaceSuggestion`と非同期AI処理があり、通常の変換とは異なる経路から`makeKeyAndOrderFront(nil)`で表示される。**3枚を同時生成する設計は意図的だが、3枚の同時表示が必要なわけではない。**
 
-さらに、[`PromptInputWindow`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/Windows/PromptInput/PromptInputWindow.swift)を4枚目として生成する。SwiftUIを内包するこの画面はプロンプト入力時に使うため、通常の候補表示とは別の機能に属する。`360×310`という観測サイズは、このウィンドウの`resizeWindowToContent()`が通常表示時に計算するサイズと一致する。
+さらに、[`PromptInputWindow`](https://github.com/Amatubamem/azooKey-Desktop/blob/diagnostics/window-lifecycle-348/azooKeyMac/Windows/PromptInput/PromptInputWindow.swift)を4枚目として生成する。SwiftUIを内包するこの画面はプロンプト入力時に使うため、通常の候補表示とは別の機能に属する。生成された4枚のIDとの対応から、観測された`360×310`のウィンドウをこのプロンプト用と識別できる。一方、ソースにある初期サイズは`360×200`で、`resizeWindowToContent()`の通常表示時の計算値は`360×324`である。観測した`360×310`との差は未解明であり、ウィンドウの実際の寸法をソースの定数だけで断定しない。
 
 この構成は**azooKeyの現行コードに照らして想定どおり**であり、IMKが3枚の候補ウィンドウを生成する仕様ではない。IMKは[`IMKCandidates`](https://developer.apple.com/documentation/inputmethodkit/imkcandidates)も提供するが、その利用は任意である。azooKeyは候補リストを独自のAppKitビューで構築している。
 
