@@ -223,6 +223,22 @@ SETTLE_SECONDS=10 DURATION_SECONDS=10 TAB_STEPS="2 4" \
 
 現在のスモークテストは、実際のウィンドウ増加を検証できなければ中断する。そのため、有効な負荷比較結果はまだ得られていない。次は対話的なターミナルとLaunchAgentの双方から同じCoreGraphics列挙を行い、取得件数を比較する。実行環境の差異を解消してから、タブ追加による4枚単位の増減試験を再実施する。
 
+### アクセシビリティ許可後の再実行と権限切り分け（2026-10-29）
+
+macOSの`node`にアクセシビリティ権限を付与した後、[既存Workflowの再実行（attempt 2）](https://github.com/Amatubamem/azooKey-Desktop/actions/runs/40885141263/attempts/2)を行った。入力ソースはazooKeyで、AppleScriptのChrome操作はエラーを返さなかったが、CoreGraphicsによる全ウィンドウ列挙は依然0枚となった。
+
+原因を切り分けるため、Workflowに権限の読み取り専用チェックを追加し、[診断ジョブ](https://github.com/Amatubamem/azooKey-Desktop/actions/runs/40889017209)を実行した。結果は以下のとおり。
+
+| チェック | 実測結果 |
+| --- | --- |
+| `AXIsProcessTrusted()` | `true`（アクセシビリティ権限あり） |
+| `CGPreflightScreenCaptureAccess()` | **`false`（画面収録権限なし）** |
+| `CGWindowListCopyWindowInfo(.optionAll, ...)` | **`nil`**（以前のコードは`nil`を空配列に変換していた） |
+| 選択中の入力ソース | `dev.kasano.inputmethod.azooKeyMac.Japanese` |
+| ChromeのAppleScriptによるウィンドウ数 | 3枚 |
+
+これにより、前回の「ウィンドウ数0枚」は実際のウィンドウ不存在ではなく、CoreGraphicsの取得失敗を`?? []`で隠したものだったと判明した。**ランナーから実行したSwiftプロセスでは画面収録権限が不足している。** 画面収録を許可した後、ウィンドウ列挙とGUI実験が正常に進むか再検証する。今回は権限不足が分かった段階で停止したため、ウィンドウ増分・負荷比較の有効な実測値はまだない。
+
 ## 次のタスク
 
 - [ ] **標準IMEとの比較**：同じChrome操作で、日本語標準入力の関連プロセス・ウィンドウ数・Physical footprint・WindowServer負荷を調べる。
