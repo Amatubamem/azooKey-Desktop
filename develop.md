@@ -117,6 +117,26 @@ Git情報の生成処理はupstreamに合わせて戻した。生成する内容
 8. 「動作確認」の項目で動作を確かめる。
 9. 本書の「基準となる版」と「正式版との差分」を更新する。
 
+## 不可視ウィンドウ蓄積の検証（#348、一時的な診断）
+
+検証ブランチ `diagnostics/window-lifecycle-348` では、`azooKeyMacInputController` の初期化・アクティブ化・非アクティブ化・破棄の際に `[WindowLifecycle]` のログを出力する。初期化時はコントローラIDと候補・予測・置換候補・プロンプトの各ウィンドウ番号を記録する。入力文字列や入力先アプリの情報は記録しない。診断用変更であり、製品版へ取り込むものではない。
+
+1. ブランチをチェックアウトし、必要なら `./update.sh` でビルド・インストールする。現在のプロセスは再起動されるため、PIDは更新後に取得する。
+2. 以下で初期状態のウィンドウ数とウィンドウ番号を記録する。
+3. テキストエディットやブラウザなど、複数アプリの入力欄を切り替えて同じ測定を繰り返す。
+4. `init` / `deinit` のログとウィンドウ番号を比較し、コントローラの生成回数とウィンドウの残留を区別する。
+
+```zsh
+pid=$(pgrep -x azooKeyMac | head -n 1)
+swift Tools/window-lifecycle-snapshot.swift "$pid"
+swift Tools/window-lifecycle-snapshot.swift "$pid" --ids
+
+# 別のターミナルで実行し、アプリを切り替えながら観察する。
+log stream --style compact --predicate 'process == "azooKeyMac" AND eventMessage CONTAINS "[WindowLifecycle]"'
+```
+
+`400x1000 layer=101` が3枚ずつ増える場合は、候補・予測・置換候補の3ウィンドウを生成する入力コントローラの増加と整合する。アクティブ化のたびに既存コントローラが再利用されるか、別のコントローラが生成されるかをログで判別する。なお、`deinit` がすぐに発生しないことだけではリークと断定できない。IMKitやAppKitの正常な保持・再利用との切り分けが必要である。
+
 ## 動作確認
 
 | 確認項目 | 方法 | 期待する結果 |
