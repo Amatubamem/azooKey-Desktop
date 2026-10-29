@@ -183,14 +183,14 @@ public final class SegmentsManager {
         )
     }
 
-    private var resourcesDirectoryURL: URL {
-        if let resourcesDirectoryURL = self.context.resourcesDirectoryURL {
-            return resourcesDirectoryURL
-        }
-        if let resourceURL = Bundle.main.resourceURL {
-            return resourceURL
-        }
-        return Bundle.main.bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+    var resourcesDirectoryURL: URL {
+        let url = self.context.resourcesDirectoryURL
+            ?? Bundle.main.resourceURL
+            ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+        // Bundle.main.resourceURLはbundleURL基準の相対URLである。
+        // 変換エンジンはpath(percentEncoded:)でモデルを開くため、相対URLのままでは
+        // 「Contents/Resources/…」という相対パスになり、Zenzaiの読込に失敗する。
+        return url.absoluteURL
     }
 
     private var metadata: ConvertRequestOptions.Metadata {
