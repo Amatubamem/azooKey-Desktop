@@ -36,6 +36,14 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     private static let doubleTapInterval: TimeInterval = 0.5
     private static let candidateWindowInitialSize = CGSize(width: 400, height: 1000)
 
+    // Temporary diagnostics for https://github.com/azooKey/azooKey-Desktop/issues/348.
+    // Record controller identity without logging user input or client application data.
+    private let windowLifecycleID = UUID().uuidString
+
+    private func logWindowLifecycle(_ event: String) {
+        NSLog("[WindowLifecycle] %@ controller=%@", event, self.windowLifecycleID)
+    }
+
     // ピン留めプロンプトのキャッシュ（パフォーマンス向上のため）
     private var pinnedPromptsCache: [PromptHistoryItem] = []
 
@@ -141,6 +149,18 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         self.replaceSuggestionsViewController.delegate = self
         self.segmentsManager.delegate = self
         self.setupMenu()
+        NSLog(
+            "[WindowLifecycle] init controller=%@ candidate=%ld prediction=%ld replace=%ld prompt=%ld",
+            self.windowLifecycleID,
+            self.candidatesWindow.windowNumber,
+            self.predictionWindow.windowNumber,
+            self.replaceSuggestionWindow.windowNumber,
+            self.promptInputWindow.windowNumber
+        )
+    }
+
+    deinit {
+        NSLog("[WindowLifecycle] deinit controller=%@", self.windowLifecycleID)
     }
 
     @MainActor
@@ -170,6 +190,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         self.candidatesWindow.orderOut(nil)
         self.candidatesViewController.hide()
         self.hidePredictionWindow()
+        self.logWindowLifecycle("activate")
     }
 
     @MainActor
@@ -182,6 +203,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         self.replaceSuggestionWindow.orderOut(nil)
         self.candidatesViewController.updateCandidatePresentations([], selectionIndex: nil, cursorLocation: .zero)
         super.deactivateServer(sender)
+        self.logWindowLifecycle("deactivate")
     }
 
     @MainActor
