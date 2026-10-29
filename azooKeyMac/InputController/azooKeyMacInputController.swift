@@ -163,6 +163,11 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         NSLog("[WindowLifecycle] deinit controller=%@", self.windowLifecycleID)
     }
 
+    override func inputControllerWillClose() {
+        self.logWindowLifecycle("willClose")
+        super.inputControllerWillClose()
+    }
+
     @MainActor
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
@@ -190,7 +195,6 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         self.candidatesWindow.orderOut(nil)
         self.candidatesViewController.hide()
         self.hidePredictionWindow()
-        self.logWindowLifecycle("activate")
     }
 
     @MainActor
@@ -203,7 +207,6 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         self.replaceSuggestionWindow.orderOut(nil)
         self.candidatesViewController.updateCandidatePresentations([], selectionIndex: nil, cursorLocation: .zero)
         super.deactivateServer(sender)
-        self.logWindowLifecycle("deactivate")
     }
 
     @MainActor
